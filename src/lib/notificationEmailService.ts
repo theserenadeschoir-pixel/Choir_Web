@@ -1,8 +1,37 @@
 // Notification Email Service - Send email notifications for requests and approvals
 
-import { getAllAdminUsers, canApproveLeave, canApproveMeetingMinutes } from "./adminService";
+import { getAllAdminUsers, getLeaveApproversForRequest, canApproveMeetingMinutes } from "./adminService";
 import { getSettings, getAllMembers } from "./dataService";
 import { MONTH_NAMES } from "./contributionService";
+
+const OFFICIAL_CHOIR_EMAIL = "theserenadeschoir@gmail.com";
+
+function addUniqueRecipient(
+  to: Array<{ email: string; name: string }>,
+  seen: Set<string>,
+  email: string | undefined,
+  name: string
+) {
+  const normalized = (email || "").trim().toLowerCase();
+  if (!normalized || seen.has(normalized)) return;
+  seen.add(normalized);
+  to.push({ email: normalized, name });
+}
+
+function withChoirInbox(
+  recipients: Array<{ email: string; name: string }>,
+  choirName: string,
+  settingsEmail?: string
+): Array<{ email: string; name: string }> {
+  const to: Array<{ email: string; name: string }> = [];
+  const seen = new Set<string>();
+  for (const recipient of recipients) {
+    addUniqueRecipient(to, seen, recipient.email, recipient.name);
+  }
+  addUniqueRecipient(to, seen, settingsEmail, choirName || "Choir");
+  addUniqueRecipient(to, seen, OFFICIAL_CHOIR_EMAIL, choirName || "Choir");
+  return to;
+}
 
 const isDev = () => typeof window !== "undefined" && (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1");
 
@@ -221,13 +250,22 @@ export async function notifyLeaveRequestCreated(
   memberName: string,
   startDate: string,
   endDate: string,
-  reason: string
+  reason: string,
+  requester?: { memberId?: string; memberEmail?: string }
 ): Promise<void> {
   const [admins, settings] = await Promise.all([getAllAdminUsers(), getSettings()]);
-  const approvers = admins.filter(a => canApproveLeave(a) && a.isActive);
-  if (approvers.length === 0) return;
+  const approvers = getLeaveApproversForRequest(
+    { memberId: requester?.memberId, memberEmail: requester?.memberEmail },
+    admins
+  );
 
-  const to = approvers.map(a => ({ email: a.email, name: a.name }));
+  const to = withChoirInbox(
+    approvers.map((approver) => ({ email: approver.email, name: approver.name })),
+    settings.choirName,
+    settings.email
+  );
+
+  if (to.length === 0) return;
   const subject = `New Leave Request from ${memberName}`;
   const html = emailWrapper("New Leave Request", `
     <p style="color: #344054; margin: 0 0 12px 0;"><strong>${memberName}</strong> has submitted a leave request.</p>
@@ -269,7 +307,15 @@ export async function notifyLeaveRequestDecision(
     }
   `, settings.choirName);
 
-  await sendEmail([{ email: memberEmail, name: memberName }], subject, html);
+  await sendEmail(
+    withChoirInbox(
+      [{ email: memberEmail, name: memberName }],
+      settings.choirName,
+      settings.email
+    ),
+    subject,
+    html
+  );
 }
 
 // ============ UNLOCK REQUEST NOTIFICATIONS ============

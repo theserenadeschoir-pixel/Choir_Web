@@ -727,10 +727,14 @@ export function isReviewer(user: AdminUser | null): boolean {
   return user?.role === "reviewer";
 }
 
-export function canApproveLeave(user: AdminUser | null): boolean {
-  if (!user) return false;
-  return ["super_admin", "main_admin", "secretary", "disciplinary", "reviewer"].includes(user.role);
-}
+export {
+  adminMatchesLeaveRequester,
+  canApproveLeave,
+  canApproveLeaveRequest,
+  getLeaveApproversForRequest,
+  isDisciplinaryLeaveRequester,
+  type LeaveRequesterIdentity,
+} from "./leaveApprovalPolicy";
 
 export function canApproveMeetingMinutes(user: AdminUser | null): boolean {
   if (!user) return false;
@@ -741,7 +745,7 @@ export function hasWriteAccess(user: AdminUser | null, area: string): boolean {
   if (!user) return false;
 
   if (user.role === "reviewer") {
-    return area === "leave";
+    return false;
   }
 
   if (user.role === "social_affairs" || user.role === "coach") {

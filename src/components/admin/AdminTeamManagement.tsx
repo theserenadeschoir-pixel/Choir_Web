@@ -708,7 +708,7 @@ export function AdminTeamManagement() {
                   <SelectItem value="reviewer">
                     <div className="flex flex-col">
                       <span className="font-medium">Reviewer</span>
-                      <span className="text-xs text-muted-foreground">View-only access, can only approve leave requests</span>
+                      <span className="text-xs text-muted-foreground">View-only access across choir modules</span>
                     </div>
                   </SelectItem>
                   <SelectItem value="social_affairs">

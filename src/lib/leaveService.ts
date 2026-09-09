@@ -2,6 +2,8 @@
 
 import { dbGetAll, dbGetById, dbInsert, dbUpdate, dbDelete, dbQuery, dbDeleteWhere, invalidateCache, supabase } from './supabaseDB';
 import { getAllMembers, getSettings } from './dataService';
+import { getAdminById, getAllAdminUsers } from './adminService';
+import { canApproveLeaveRequest, isDisciplinaryLeaveRequester } from './leaveApprovalPolicy';
 
 // Approval vote from an admin
 export interface ApprovalVote {
@@ -47,9 +49,22 @@ export function generateLeaveRequestId(): string {
 }
 
 // Constants for approval rules
-export const REQUIRED_APPROVALS = 3;
-export const REQUIRED_DENIALS = 2;
+export const REQUIRED_APPROVALS_MEMBER = 2;
+export const REQUIRED_APPROVALS_DISCIPLINARY = 1;
+export const REQUIRED_DENIALS_MEMBER = 2;
+export const REQUIRED_DENIALS_DISCIPLINARY = 1;
+export const REQUIRED_APPROVALS = REQUIRED_APPROVALS_MEMBER;
+export const REQUIRED_DENIALS = REQUIRED_DENIALS_MEMBER;
 export const MINIMUM_NOTICE_DAYS = 2;
+
+export function getLeaveApprovalRequirements(isDisciplinaryRequester: boolean): {
+  required: number;
+  requiredDenials: number;
+} {
+  return isDisciplinaryRequester
+    ? { required: REQUIRED_APPROVALS_DISCIPLINARY, requiredDenials: REQUIRED_DENIALS_DISCIPLINARY }
+    : { required: REQUIRED_APPROVALS_MEMBER, requiredDenials: REQUIRED_DENIALS_MEMBER };
+}
 
 const LEAVE_REQUESTS_KEY = 'choir_leave_requests';
 const VERIFICATION_CODES_KEY = 'choir_verification_codes';
@@ -256,18 +271,22 @@ export function hasAdminVoted(request: LeaveRequest, adminId: string): boolean {
 }
 
 // Get approval progress for display - pure helper, stays sync
-export function getApprovalProgress(request: LeaveRequest): {
+export function getApprovalProgress(
+  request: LeaveRequest,
+  requirements?: { required?: number; requiredDenials?: number }
+): {
   approvals: number;
   denials: number;
   required: number;
   requiredDenials: number;
   status: string;
 } {
+  const defaults = getLeaveApprovalRequirements(false);
   return {
     approvals: request.approvalCount || 0,
     denials: request.denialCount || 0,
-    required: REQUIRED_APPROVALS,
-    requiredDenials: REQUIRED_DENIALS,
+    required: requirements?.required ?? defaults.required,
+    requiredDenials: requirements?.requiredDenials ?? defaults.requiredDenials,
     status: request.status,
   };
 }
@@ -285,6 +304,11 @@ export async function castVote(
 
   if (request.status === 'approved' || request.status === 'denied') {
     return { error: 'This leave request has already been finalized.' };
+  }
+
+  const [voter, admins] = await Promise.all([getAdminById(adminId), getAllAdminUsers()]);
+  if (!canApproveLeaveRequest(voter, request, admins)) {
+    return { error: 'You do not have permission to review this leave request.' };
   }
 
   let votes = request.votes || [];
@@ -310,13 +334,17 @@ export async function castVote(
     denialCount += 1;
   }
 
+  const { required, requiredDenials } = getLeaveApprovalRequirements(
+    isDisciplinaryLeaveRequester(request, admins)
+  );
+
   let newStatus = request.status;
   let reviewedAt = request.reviewedAt;
 
-  if (denialCount >= REQUIRED_DENIALS) {
+  if (denialCount >= requiredDenials) {
     newStatus = 'denied';
     reviewedAt = new Date().toISOString();
-  } else if (approvalCount >= REQUIRED_APPROVALS) {
+  } else if (approvalCount >= required) {
     newStatus = 'approved';
     reviewedAt = new Date().toISOString();
   } else if (approvalCount > 0) {

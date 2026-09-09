@@ -80,7 +80,7 @@ import {
   getLeaveRequestsByEmail,
   validateLeaveRequestDate,
   MINIMUM_NOTICE_DAYS,
-  REQUIRED_APPROVALS,
+  getLeaveApprovalRequirements,
   type LeaveRequest,
 } from "@/lib/leaveService";
 import {
@@ -88,6 +88,7 @@ import {
   verifyEmailCode,
 } from "@/lib/emailVerificationService";
 import { notifyLeaveRequestCreated } from "@/lib/notificationEmailService";
+import { getAllAdminUsers, isDisciplinaryLeaveRequester } from "@/lib/adminService";
 import {
   getAttendanceByMemberEmail,
   getMemberAttendanceStatsByEmail,
@@ -559,6 +560,7 @@ export default function MemberPortal() {
   const [isSubmittingSurvey, setIsSubmittingSurvey] = useState(false);
   const [selectedReceipt, setSelectedReceipt] = useState<Contribution | null>(null);
   const [deletingRequestId, setDeletingRequestId] = useState<string | null>(null);
+  const [isDisciplinaryMember, setIsDisciplinaryMember] = useState(false);
   const [contributionPaymentDraft, setContributionPaymentDraft] = useState<ContributionPaymentDraft | null>(null);
   const [contributionPaymentPhone, setContributionPaymentPhone] = useState("");
   const [isContributionPaymentLoading, setIsContributionPaymentLoading] = useState(false);
@@ -592,6 +594,21 @@ export default function MemberPortal() {
       loadContributionData(memberInfo);
     }
   }, [loadContributionData, memberInfo]);
+
+  useEffect(() => {
+    if (!memberInfo && !email) {
+      setIsDisciplinaryMember(false);
+      return;
+    }
+    getAllAdminUsers()
+      .then((admins) => {
+        setIsDisciplinaryMember(isDisciplinaryLeaveRequester({
+          memberId: memberInfo?.id,
+          memberEmail: email || memberInfo?.email,
+        }, admins));
+      })
+      .catch(() => setIsDisciplinaryMember(false));
+  }, [memberInfo, email]);
 
   // Populate edit form when member info is loaded
   useEffect(() => {
@@ -1110,12 +1127,16 @@ export default function MemberPortal() {
       }
 
       // Notify approvers via email
-      notifyLeaveRequestCreated(memberInfo?.name || email, startDate, endDate, reason);
+      notifyLeaveRequestCreated(memberInfo?.name || email, startDate, endDate, reason, {
+        memberId: memberInfo?.id,
+        memberEmail: email,
+      });
 
       setView("success");
+      const requiredApprovals = getLeaveApprovalRequirements(isDisciplinaryMember).required;
       toast({
         title: "Request submitted! ✅",
-        description: `Your leave request has been sent for review. It requires ${REQUIRED_APPROVALS} approvals.`,
+        description: `Your leave request has been sent for review. It requires ${requiredApprovals} approval${requiredApprovals === 1 ? "" : "s"}.`,
       });
     } else {
       toast({
@@ -1142,6 +1163,8 @@ export default function MemberPortal() {
     }
   };
 
+  const leaveRequirements = getLeaveApprovalRequirements(isDisciplinaryMember);
+
   const getStatusBadge = (status: LeaveRequest["status"], request?: LeaveRequest) => {
     switch (status) {
       case "pending":
@@ -1152,7 +1175,7 @@ export default function MemberPortal() {
             </span>
             {request && (
               <span className="text-[10px] text-muted-foreground">
-                {request.approvalCount || 0}/{REQUIRED_APPROVALS} approvals
+                {request.approvalCount || 0}/{leaveRequirements.required} approvals
               </span>
             )}
           </div>
@@ -1165,7 +1188,7 @@ export default function MemberPortal() {
             </span>
             {request && (
               <span className="text-[10px] text-muted-foreground">
-                {request.approvalCount || 0}/{REQUIRED_APPROVALS} approvals
+                {request.approvalCount || 0}/{leaveRequirements.required} approvals
               </span>
             )}
           </div>

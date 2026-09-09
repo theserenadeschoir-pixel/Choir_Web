@@ -101,8 +101,7 @@ import {
   getLeaveRequestStats,
   hasAdminVoted,
   getApprovalProgress,
-  REQUIRED_APPROVALS,
-  REQUIRED_DENIALS,
+  getLeaveApprovalRequirements,
   type LeaveRequest,
 } from "@/lib/leaveService";
 import {
@@ -185,7 +184,7 @@ import {
 } from "@/lib/notificationEmailService";
 import { getAllDonations } from "@/lib/donationService";
 import { BarChart3, Shield, History, Wallet, Receipt, PiggyBank, X, TrendingUp, TrendingDown, ThumbsUp, ThumbsDown, Info, AlertTriangle } from "lucide-react";
-import { addAuditLog, getAccessibleTabs, hasPermission, getRoleLabel, canEditMembers, hasWriteAccess, isReviewer, changePassword, updateAdminUser, getAdminById } from "@/lib/adminService";
+import { addAuditLog, getAccessibleTabs, hasPermission, getRoleLabel, canEditMembers, hasWriteAccess, isReviewer, changePassword, updateAdminUser, getAdminById, getAllAdminUsers, canApproveLeaveRequest, isDisciplinaryLeaveRequester, adminMatchesLeaveRequester, type AdminUser } from "@/lib/adminService";
 const ContactSubmissions = lazy(() => import("@/components/admin/ContactSubmissions").then(m => ({ default: m.ContactSubmissions })));
 import { getUnreadCount as getUnreadContactCount } from "@/lib/contactService";
 const ExpenseManagement = lazy(() => import("@/components/admin/ExpenseManagement").then(m => ({ default: m.ExpenseManagement })));
@@ -294,7 +293,10 @@ export default function Admin() {
   const [musicVideos, setMusicVideos] = useState<MusicVideo[]>([]);
   const [streamingPlatforms, setStreamingPlatforms] = useState<StreamingPlatform[]>([]);
   const [leaveRequests, setLeaveRequests] = useState<LeaveRequest[]>([]);
+  const [adminUsers, setAdminUsers] = useState<AdminUser[]>([]);
   const [leaveFilter, setLeaveFilter] = useState<"all" | "pending" | "approved" | "denied">("all");
+  const getLeaveRequirements = (request: LeaveRequest) =>
+    getLeaveApprovalRequirements(isDisciplinaryLeaveRequester(request, adminUsers));
   const [unreadMessages, setUnreadMessages] = useState(0);
 
   // Financial totals for Finance dashboard
@@ -401,16 +403,19 @@ export default function Admin() {
         eventsData,
         dashboardData,
         unreadCount,
+        adminsData,
       ] = await Promise.all([
         getAllMembers(),
         getAllEvents(),
         getDashboardStats(),
         getUnreadContactCount(),
+        getAllAdminUsers(),
       ]);
       setMembers(membersData);
       setEvents(eventsData);
       setDashboardStats(dashboardData);
       setUnreadMessages(unreadCount);
+      setAdminUsers(adminsData);
 
     } catch (err) {
       console.error("[Admin] Error loading core data:", err);
@@ -585,9 +590,15 @@ export default function Admin() {
       case "gallery":
         setGallery(await getAllGalleryItems());
         break;
-      case "leave":
-        setLeaveRequests(await getAllLeaveRequests());
+      case "leave": {
+        const [requests, admins] = await Promise.all([
+          getAllLeaveRequests(),
+          getAllAdminUsers(),
+        ]);
+        setLeaveRequests(requests);
+        setAdminUsers(admins);
         break;
+      }
       case "contributions": {
         const contributions = await getAllContributions();
         const contributionTotal = contributions.reduce((sum, c) => sum + c.amount, 0);
@@ -3449,7 +3460,7 @@ export default function Admin() {
                   <p className="text-2xl font-bold text-yellow-400">
                     {leaveRequests.filter(r => r.status === "pending").length}
                   </p>
-                  <p className="text-xs text-muted-foreground">New (0/{REQUIRED_APPROVALS})</p>
+                  <p className="text-xs text-muted-foreground">New</p>
                 </div>
                 <div className="card-glass rounded-xl p-4 text-center">
                   <p className="text-2xl font-bold text-orange-400">
@@ -3569,7 +3580,7 @@ export default function Admin() {
                                 {/* Show approval progress */}
                                 {(request.status === "pending" || request.status === "partial") && (
                                   <span className="text-xs text-muted-foreground">
-                                    {request.approvalCount || 0}/{REQUIRED_APPROVALS} approvals
+                                    {request.approvalCount || 0}/{getLeaveRequirements(request).required} approvals
                                     {(request.denialCount || 0) > 0 && (
                                       <span className="text-red-400 ml-1">• {request.denialCount} denial{request.denialCount > 1 ? "s" : ""}</span>
                                     )}
@@ -3590,8 +3601,7 @@ export default function Admin() {
                                 </Button>
                               {(request.status === "pending" || request.status === "partial") && (
                                 <>
-                                  {/* Prevent admins from approving their own leave requests */}
-                                  {currentUser?.memberId === request.memberId ? (
+                                  {currentUser && adminMatchesLeaveRequester(currentUser, request) ? (
                                     <span className="text-xs text-muted-foreground italic">
                                       Cannot review own request
                                     </span>
@@ -3600,13 +3610,14 @@ export default function Admin() {
                                       <CheckCircle className="w-3 h-3 text-primary" />
                                       You voted
                                     </span>
-                                  ) : (
+                                  ) : currentUser && canApproveLeaveRequest(currentUser, request, adminUsers) ? (
                                     <div className="flex gap-1 justify-end">
                                       <Button
                                         variant="ghost"
                                         size="sm"
                                         className="text-green-400 hover:text-green-300 hover:bg-green-500/10"
                                         onClick={async () => {
+                                          const requirements = getLeaveRequirements(request);
                                           const result = await approveLeaveRequest(
                                             request.id, 
                                             currentUser?.id || "admin",
@@ -3623,7 +3634,7 @@ export default function Admin() {
                                             if (currentUser) {
                                               addAuditLog(currentUser, "APPROVE_LEAVE", `Approved leave request for: ${request.memberName}`);
                                             }
-                                            const progress = getApprovalProgress(result);
+                                            const progress = getApprovalProgress(result, requirements);
                                             if (result.status === "approved") {
                                               toast({
                                                 title: "Leave Fully Approved!",
@@ -3656,6 +3667,7 @@ export default function Admin() {
                                             );
                                             if (!confirmed) return;
                                           }
+                                          const requirements = getLeaveRequirements(request);
                                           const result = await denyLeaveRequest(
                                             request.id, 
                                             currentUser?.id || "admin",
@@ -3673,7 +3685,7 @@ export default function Admin() {
                                             if (currentUser) {
                                               addAuditLog(currentUser, "DENY_LEAVE", `Denied leave request for: ${request.memberName}`);
                                             }
-                                            const progress = getApprovalProgress(result);
+                                            const progress = getApprovalProgress(result, requirements);
                                             if (result.status === "denied") {
                                               toast({
                                                 title: "Leave Denied",
@@ -3693,6 +3705,10 @@ export default function Admin() {
                                         <ThumbsDown className="w-4 h-4" />
                                       </Button>
                                     </div>
+                                  ) : (
+                                    <span className="text-xs text-muted-foreground italic">
+                                      View only
+                                    </span>
                                   )}
                                 </>
                               )}
@@ -3736,6 +3752,8 @@ export default function Admin() {
                 <ul className="text-sm text-muted-foreground space-y-2">
                   <li>• Members access the portal at <code className="text-primary">/member-portal</code> using the choir PIN</li>
                   <li>• They verify their identity via email before submitting a request</li>
+                  <li>• Disciplinary officers approve choir members' leave (2 approvals, or 2 denials)</li>
+                  <li>• Super admin approves leave only for disciplinary officers (1 approval or 1 denial)</li>
                   <li>• Approved leave requests will show members as "Excused" in attendance</li>
                   <li>• Members can view their request status in the portal</li>
                 </ul>
@@ -4668,7 +4686,7 @@ export default function Admin() {
                       {viewingLeaveRequest.status === "partial" ? "In Progress" : viewingLeaveRequest.status}
                     </span>
                     <span className="text-sm text-muted-foreground">
-                      {viewingLeaveRequest.approvalCount || 0}/{REQUIRED_APPROVALS} approvals
+                      {viewingLeaveRequest.approvalCount || 0}/{getLeaveRequirements(viewingLeaveRequest).required} approvals
                     </span>
                     {(viewingLeaveRequest.denialCount || 0) > 0 && (
                       <span className="text-sm text-red-400">
